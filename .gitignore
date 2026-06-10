@@ -1,0 +1,10 @@
+node_modules/
+dist/
+logs/
+
+.env
+.env.*
+*.log
+
+.gemini-cli-workspace-master-key
+gemini-cli-workspace-token.json
