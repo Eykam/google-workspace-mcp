@@ -11,6 +11,9 @@ import { logToFile } from '../utils/logger';
 import { extractDocId } from '../utils/IdUtils';
 import { marked } from 'marked';
 import { Readable } from 'node:stream';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import * as path from 'node:path';
 import createDOMPurify from 'dompurify';
 import { JSDOM } from 'jsdom';
 import { gaxiosOptions, mediaUploadOptions } from '../utils/GaxiosConfig';
@@ -20,6 +23,9 @@ import {
   parseMarkdownToDocsRequests,
   processMarkdownLineBreaks,
 } from '../utils/markdownToDocsRequests';
+
+const DOCX_MIME =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 export class DocsService {
   private purify: ReturnType<typeof createDOMPurify>;
@@ -121,6 +127,144 @@ export class DocsService {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       logToFile(`Error during docs.create: ${errorMessage}`);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ error: errorMessage }),
+          },
+        ],
+      };
+    }
+  };
+
+  /**
+   * Uploads a local .docx and lets Drive convert it into a native Google Doc.
+   *
+   * This is the only path that carries inline images, named paragraph styles and
+   * table borders. The markdown path in `create` goes through HTML, which cannot
+   * express an embedded image: the Docs API only takes images by fetchable URL.
+   */
+  public importDocx = async ({
+    localPath,
+    title,
+    folderName,
+  }: {
+    localPath: string;
+    title?: string;
+    folderName?: string;
+  }) => {
+    logToFile(`[DocsService] Importing docx from ${localPath}`);
+    try {
+      const stats = await stat(localPath);
+      if (!stats.isFile()) {
+        throw new Error(`Not a file: ${localPath}`);
+      }
+      const drive = await this.getDriveClient();
+      const res = await drive.files.create(
+        {
+          requestBody: {
+            name: title || path.basename(localPath, path.extname(localPath)),
+            mimeType: 'application/vnd.google-apps.document',
+          },
+          media: {
+            mimeType: DOCX_MIME,
+            body: createReadStream(localPath),
+          },
+          supportsAllDrives: true,
+          fields: 'id,name,webViewLink',
+        },
+        mediaUploadOptions,
+      );
+      const documentId = res.data.id!;
+      if (folderName) {
+        logToFile(`[DocsService] Moving imported doc to folder: ${folderName}`);
+        await this._moveFileToFolder(documentId, folderName);
+      }
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              documentId,
+              title: res.data.name,
+              url:
+                res.data.webViewLink ||
+                `https://docs.google.com/document/d/${documentId}/edit`,
+              bytesUploaded: stats.size,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      logToFile(`Error during docs.importDocx: ${errorMessage}`);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ error: errorMessage }),
+          },
+        ],
+      };
+    }
+  };
+
+  /**
+   * Replaces the content of an existing Google Doc from a local .docx, keeping
+   * the same file id so links already shared stay valid.
+   *
+   * This overwrites the whole document. Hand edits made in Drive are lost, so
+   * treat the local builder as the source of truth.
+   */
+  public updateFromDocx = async ({
+    documentId,
+    localPath,
+  }: {
+    documentId: string;
+    localPath: string;
+  }) => {
+    logToFile(`[DocsService] Replacing ${documentId} from ${localPath}`);
+    try {
+      const id = extractDocId(documentId) || documentId;
+      const stats = await stat(localPath);
+      if (!stats.isFile()) {
+        throw new Error(`Not a file: ${localPath}`);
+      }
+      const drive = await this.getDriveClient();
+      const res = await drive.files.update(
+        {
+          fileId: id,
+          media: {
+            mimeType: DOCX_MIME,
+            body: createReadStream(localPath),
+          },
+          supportsAllDrives: true,
+          fields: 'id,name,webViewLink,modifiedTime',
+        },
+        mediaUploadOptions,
+      );
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              documentId: res.data.id,
+              title: res.data.name,
+              url:
+                res.data.webViewLink ||
+                `https://docs.google.com/document/d/${res.data.id}/edit`,
+              modifiedTime: res.data.modifiedTime,
+              bytesUploaded: stats.size,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      logToFile(`Error during docs.updateFromDocx: ${errorMessage}`);
       return {
         content: [
           {

@@ -305,6 +305,45 @@ async function main() {
   );
 
   server.registerTool(
+    'docs.importDocx',
+    {
+      description:
+        'Uploads a local .docx file to Drive and converts it into a native Google Doc. Use this instead of docs.create whenever the document has embedded images, named styles or ruled tables, since the markdown path cannot carry them. Returns the document id and URL.',
+      inputSchema: {
+        localPath: z
+          .string()
+          .describe('Absolute local path to the .docx file.'),
+        title: z
+          .string()
+          .optional()
+          .describe('Title for the document. Defaults to the file name.'),
+        folderName: z
+          .string()
+          .optional()
+          .describe('Optional Drive folder name to move the document into.'),
+      },
+    },
+    docsService.importDocx,
+  );
+
+  server.registerTool(
+    'docs.updateFromDocx',
+    {
+      description:
+        'Replaces the content of an existing Google Doc from a local .docx file, keeping the same document id and URL so shared links stay valid. Overwrites the whole document, so any hand edits made in Drive are lost.',
+      inputSchema: {
+        documentId: z
+          .string()
+          .describe('The ID or URL of the document to replace.'),
+        localPath: z
+          .string()
+          .describe('Absolute local path to the .docx file.'),
+      },
+    },
+    docsService.updateFromDocx,
+  );
+
+  server.registerTool(
     'docs.extractIdFromUrl',
     {
       description: 'Extracts the document ID from a Google Workspace URL.',
@@ -416,6 +455,76 @@ async function main() {
       },
     },
     slidesService.getSlideThumbnail,
+  );
+
+  server.registerTool(
+    'slides.create',
+    {
+      description:
+        'Creates a new, empty Google Slides presentation and returns its id and URL.',
+      inputSchema: {
+        title: z.string().describe('Title for the new presentation.'),
+      },
+    },
+    slidesService.create,
+  );
+
+  server.registerTool(
+    'slides.batchUpdate',
+    {
+      description:
+        'Applies raw Google Slides API batchUpdate requests to a presentation. Use for creating slides, inserting text boxes, tables, images and shapes, and for editing or deleting existing page elements.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation to edit.'),
+        requests: z
+          .union([z.string(), z.array(z.record(z.any()))])
+          .describe(
+            'Slides API request objects, either a JSON array or a JSON string of that array.',
+          ),
+      },
+    },
+    slidesService.batchUpdate,
+  );
+
+  server.registerTool(
+    'slides.importPptx',
+    {
+      description:
+        'Uploads a local .pptx file to Drive and converts it into a native Google Slides presentation. Returns the presentation id and URL.',
+      inputSchema: {
+        localPath: z
+          .string()
+          .describe('Absolute local path to the .pptx file.'),
+        title: z
+          .string()
+          .optional()
+          .describe('Title for the presentation. Defaults to the file name.'),
+        parentId: z
+          .string()
+          .optional()
+          .describe('Optional Drive folder id to create the file in.'),
+      },
+    },
+    slidesService.importPptx,
+  );
+
+  server.registerTool(
+    'slides.updateFromPptx',
+    {
+      description:
+        'Replaces the content of an existing Google Slides presentation from a local .pptx file, keeping the same presentation id and URL.',
+      inputSchema: {
+        presentationId: z
+          .string()
+          .describe('The ID or URL of the presentation to replace.'),
+        localPath: z
+          .string()
+          .describe('Absolute local path to the .pptx file.'),
+      },
+    },
+    slidesService.updateFromPptx,
   );
 
   // Sheets tools

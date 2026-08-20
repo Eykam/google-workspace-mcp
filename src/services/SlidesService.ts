@@ -6,6 +6,7 @@
 
 import { google, slides_v1, drive_v3 } from 'googleapis';
 import * as fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import * as path from 'node:path';
 import { request } from 'gaxios';
 import { AuthManager } from '../auth/AuthManager';
@@ -202,13 +203,27 @@ export class SlidesService {
       const presentation = await slides.presentations.get({
         presentationId: id,
         fields:
-          'presentationId,title,slides(objectId),pageSize,notesMaster,masters,layouts',
+          'presentationId,title,slides(objectId,pageElements(objectId,table(rows,columns))),pageSize,notesMaster,masters,layouts',
       });
 
       const metadata = {
         presentationId: presentation.data.presentationId,
         title: presentation.data.title,
         slideCount: presentation.data.slides?.length || 0,
+        // The tool description points callers here for slide object ids, and
+        // slides.getSlideThumbnail is unusable without them.
+        slideObjectIds: (presentation.data.slides || []).map((s) => s.objectId),
+        // Table element ids, so callers can target tables with batchUpdate.
+        tables: (presentation.data.slides || []).flatMap((s) =>
+          (s.pageElements || [])
+            .filter((el) => !!el.table)
+            .map((el) => ({
+              slideObjectId: s.objectId,
+              objectId: el.objectId,
+              rows: el.table?.rows,
+              columns: el.table?.columns,
+            })),
+        ),
         pageSize: presentation.data.pageSize,
         hasMasters: !!presentation.data.masters?.length,
         hasLayouts: !!presentation.data.layouts?.length,
@@ -399,6 +414,169 @@ export class SlidesService {
           },
         ],
       };
+    }
+  };
+
+  private ok(payload: unknown) {
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    };
+  }
+
+  private fail(where: string, error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    logToFile(`[SlidesService] Error during ${where}: ${message}`);
+    return {
+      content: [
+        { type: 'text' as const, text: JSON.stringify({ error: message }) },
+      ],
+    };
+  }
+
+  /**
+   * Writes go through the Slides API, which accepts the full Drive scope this
+   * server already requests, so no consent-screen change is needed.
+   */
+  public create = async ({ title }: { title: string }) => {
+    logToFile(`[SlidesService] Creating presentation: ${title}`);
+    try {
+      const slides = await this.getSlidesClient();
+      const res = await slides.presentations.create({
+        requestBody: { title },
+      });
+      const id = res.data.presentationId;
+      return this.ok({
+        presentationId: id,
+        title: res.data.title,
+        url: `https://docs.google.com/presentation/d/${id}/edit`,
+        slides: (res.data.slides || []).map((s) => s.objectId),
+      });
+    } catch (error) {
+      return this.fail('slides.create', error);
+    }
+  };
+
+  public batchUpdate = async ({
+    presentationId,
+    requests,
+  }: {
+    presentationId: string;
+    requests: string | unknown[];
+  }) => {
+    try {
+      const id = extractDocId(presentationId) || presentationId;
+      const parsed: slides_v1.Schema$Request[] =
+        typeof requests === 'string'
+          ? JSON.parse(requests)
+          : (requests as slides_v1.Schema$Request[]);
+      if (!Array.isArray(parsed)) {
+        throw new Error('requests must be a JSON array of Slides API requests');
+      }
+      logToFile(
+        `[SlidesService] batchUpdate on ${id} with ${parsed.length} requests`,
+      );
+      const slides = await this.getSlidesClient();
+      const res = await slides.presentations.batchUpdate({
+        presentationId: id,
+        requestBody: { requests: parsed },
+      });
+      return this.ok({
+        presentationId: id,
+        applied: parsed.length,
+        replies: res.data.replies,
+      });
+    } catch (error) {
+      return this.fail('slides.batchUpdate', error);
+    }
+  };
+
+  /**
+   * Uploads a local .pptx and lets Drive convert it to a native Google Slides
+   * presentation, which is the only reliable way to land a deck built offline.
+   */
+  public importPptx = async ({
+    localPath,
+    title,
+    parentId,
+  }: {
+    localPath: string;
+    title?: string;
+    parentId?: string;
+  }) => {
+    logToFile(`[SlidesService] Importing pptx from ${localPath}`);
+    try {
+      const stats = await fs.stat(localPath);
+      if (!stats.isFile()) {
+        throw new Error(`Not a file: ${localPath}`);
+      }
+      const drive = await this.getDriveClient();
+      const res = await drive.files.create({
+        requestBody: {
+          name: title || path.basename(localPath, path.extname(localPath)),
+          mimeType: 'application/vnd.google-apps.presentation',
+          ...(parentId ? { parents: [parentId] } : {}),
+        },
+        media: {
+          mimeType:
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          body: createReadStream(localPath),
+        },
+        supportsAllDrives: true,
+        fields: 'id,name,webViewLink',
+      });
+      return this.ok({
+        presentationId: res.data.id,
+        title: res.data.name,
+        url:
+          res.data.webViewLink ||
+          `https://docs.google.com/presentation/d/${res.data.id}/edit`,
+        bytesUploaded: stats.size,
+      });
+    } catch (error) {
+      return this.fail('slides.importPptx', error);
+    }
+  };
+
+  /**
+   * Replaces the content of an existing presentation from a local .pptx while
+   * keeping the same file id, so links already shared stay valid.
+   */
+  public updateFromPptx = async ({
+    presentationId,
+    localPath,
+  }: {
+    presentationId: string;
+    localPath: string;
+  }) => {
+    logToFile(`[SlidesService] Replacing ${presentationId} from ${localPath}`);
+    try {
+      const id = extractDocId(presentationId) || presentationId;
+      const stats = await fs.stat(localPath);
+      if (!stats.isFile()) {
+        throw new Error(`Not a file: ${localPath}`);
+      }
+      const drive = await this.getDriveClient();
+      const res = await drive.files.update({
+        fileId: id,
+        media: {
+          mimeType:
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          body: createReadStream(localPath),
+        },
+        supportsAllDrives: true,
+        fields: 'id,name,webViewLink,modifiedTime',
+      });
+      return this.ok({
+        presentationId: res.data.id,
+        title: res.data.name,
+        url:
+          res.data.webViewLink ||
+          `https://docs.google.com/presentation/d/${res.data.id}/edit`,
+        modifiedTime: res.data.modifiedTime,
+        bytesUploaded: stats.size,
+      });
+    } catch (error) {
+      return this.fail('slides.updateFromPptx', error);
     }
   };
 }
