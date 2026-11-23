@@ -27,6 +27,9 @@ async function build() {
       // Add a loader for .node files
       loader: {
         '.node': 'file',
+        // Apps Script sources for the booking page are bundled as strings
+        '.gs': 'text',
+        '.html': 'text',
       },
       // Make sure CommonJS modules work properly
       format: 'cjs',
