@@ -13,6 +13,10 @@ import { AuthManager } from './auth/AuthManager';
 import { DocsService } from './services/DocsService';
 import { DriveService } from './services/DriveService';
 import { CalendarService } from './services/CalendarService';
+import {
+  BookingPageService,
+  BOOKING_PAGE_SCOPES,
+} from './services/BookingPageService';
 import { ChatService } from './services/ChatService';
 import { GmailService } from './services/GmailService';
 import { TimeService } from './services/TimeService';
@@ -69,7 +73,12 @@ async function main() {
     setLoggingEnabled(true);
   }
 
-  const authManager = new AuthManager(SCOPES);
+  // Booking pages need extra Apps Script scopes, so they are opt-in: enabling
+  // them makes every user re-consent.
+  const enableBookingPage = process.argv.includes('--enable-booking-page');
+  const authManager = new AuthManager(
+    enableBookingPage ? [...SCOPES, ...BOOKING_PAGE_SCOPES] : SCOPES,
+  );
 
   // 2. Create the server instance
   const server = new McpServer({
@@ -92,6 +101,7 @@ async function main() {
   const docsService = new DocsService(authManager, driveService);
   const peopleService = new PeopleService(authManager);
   const calendarService = new CalendarService(authManager);
+  const bookingPageService = new BookingPageService(authManager);
   const chatService = new ChatService(authManager);
   const gmailService = new GmailService(authManager);
   const timeService = new TimeService();
@@ -850,6 +860,117 @@ async function main() {
     },
     calendarService.deleteEvent,
   );
+
+  if (enableBookingPage) {
+    server.registerTool(
+      'calendar.createBookingPage',
+      {
+        description:
+          'Creates a public booking page (like an appointment schedule) where anyone with the link can reserve a free slot on the calendar. Slots that overlap existing events or earlier bookings are not offered. Deployed as an Apps Script web app owned by the user; returns the link to share.',
+        inputSchema: {
+          title: z
+            .string()
+            .min(1)
+            .max(100)
+            .describe(
+              'Title shown on the page and used for booked events (e.g., "Interview with Sam").',
+            ),
+          description: z
+            .string()
+            .max(500)
+            .optional()
+            .describe('Short text shown under the title.'),
+          durationMinutes: z
+            .number()
+            .int()
+            .min(5)
+            .max(480)
+            .optional()
+            .describe('Length of each slot in minutes. Defaults to 30.'),
+          days: z
+            .array(z.enum(['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT']))
+            .min(1)
+            .optional()
+            .describe('Days of the week that can be booked. Defaults to MON-FRI.'),
+          startTime: z
+            .string()
+            .optional()
+            .describe(
+              'Earliest slot start each day, 24-hour HH:MM in the page time zone. Defaults to 09:00.',
+            ),
+          endTime: z
+            .string()
+            .optional()
+            .describe(
+              'Latest slot end each day, 24-hour HH:MM in the page time zone. Defaults to 17:00.',
+            ),
+          timeZone: z
+            .string()
+            .optional()
+            .describe(
+              "IANA time zone for the daily hours (e.g., America/Los_Angeles). Defaults to the calendar's time zone.",
+            ),
+          windowDays: z
+            .number()
+            .int()
+            .min(1)
+            .max(60)
+            .optional()
+            .describe('How many days ahead slots are offered. Defaults to 14.'),
+          minNoticeHours: z
+            .number()
+            .min(0)
+            .max(168)
+            .optional()
+            .describe('Minimum notice before a slot can be booked. Defaults to 12.'),
+          bufferMinutes: z
+            .number()
+            .int()
+            .min(0)
+            .max(120)
+            .optional()
+            .describe(
+              'Free time required before and after each slot. Defaults to 0.',
+            ),
+          calendarId: z
+            .string()
+            .optional()
+            .describe(
+              'The calendar bookings are created in. Defaults to the primary calendar.',
+            ),
+          checkCalendarIds: z
+            .array(z.string())
+            .optional()
+            .describe(
+              'Calendars whose events block slots. Defaults to the booking calendar.',
+            ),
+          addMeetLink: z
+            .boolean()
+            .optional()
+            .describe(
+              'Whether booked events get a Google Meet link. Defaults to true.',
+            ),
+        },
+      },
+      bookingPageService.createBookingPage,
+    );
+
+    server.registerTool(
+      'calendar.deleteBookingPage',
+      {
+        description:
+          'Takes a booking page offline by moving its Apps Script project to the Drive trash. Events already booked are kept.',
+        inputSchema: {
+          scriptId: z
+            .string()
+            .describe(
+              'The scriptId returned by calendar.createBookingPage.',
+            ),
+        },
+      },
+      bookingPageService.deleteBookingPage,
+    );
+  }
 
   server.registerTool(
     'chat.listSpaces',

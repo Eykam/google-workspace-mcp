@@ -1,0 +1,277 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top" />
+    <style>
+      :root {
+        --ink: #1f2328;
+        --muted: #636c76;
+        --line: #d0d7de;
+        --accent: #1a56db;
+        --bg: #f6f8fa;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px 16px 48px;
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+          sans-serif;
+      }
+      main {
+        max-width: 560px;
+        margin: 0 auto;
+        padding: 24px;
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 22px;
+      }
+      h2 {
+        margin: 20px 0 8px;
+        font-size: 14px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      p {
+        margin: 0 0 8px;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .slots {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+        gap: 8px;
+      }
+      button {
+        font: inherit;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--ink);
+        cursor: pointer;
+      }
+      button:hover,
+      button:focus-visible {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      label {
+        display: block;
+        margin: 12px 0 4px;
+        font-weight: 600;
+        font-size: 13px;
+      }
+      input,
+      textarea {
+        width: 100%;
+        padding: 8px 10px;
+        font: inherit;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .error {
+        margin-top: 12px;
+        color: #b42318;
+      }
+      .hp {
+        position: absolute;
+        left: -9999px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 id="title">Loading…</h1>
+      <p id="description"></p>
+      <p class="muted" id="meta"></p>
+
+      <section id="pick">
+        <div id="days"></div>
+      </section>
+
+      <form id="form" hidden>
+        <h2 id="chosen"></h2>
+        <label for="name">Name</label>
+        <input id="name" required maxlength="100" autocomplete="name" />
+        <label for="email">Email</label>
+        <input
+          id="email"
+          type="email"
+          required
+          maxlength="254"
+          autocomplete="email"
+        />
+        <label for="notes">Anything to share beforehand? (optional)</label>
+        <textarea id="notes" rows="3" maxlength="1000"></textarea>
+        <input class="hp" id="website" tabindex="-1" autocomplete="off" />
+        <div class="actions">
+          <button class="primary" id="submit" type="submit">Confirm</button>
+          <button id="back" type="button">Pick another time</button>
+        </div>
+      </form>
+
+      <section id="done" hidden>
+        <h2>You're booked</h2>
+        <p id="doneWhen"></p>
+        <p class="muted">A calendar invitation is on its way to your inbox.</p>
+      </section>
+
+      <p class="error" id="error" hidden></p>
+    </main>
+
+    <script>
+      var $ = function (id) {
+        return document.getElementById(id);
+      };
+      var timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      var dayFormat = new Intl.DateTimeFormat(undefined, {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+      });
+      var timeFormat = new Intl.DateTimeFormat(undefined, {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      var chosen = null;
+
+      function showError(message) {
+        $('error').textContent = message;
+        $('error').hidden = !message;
+      }
+
+      function describe(iso) {
+        var date = new Date(iso);
+        return dayFormat.format(date) + ' at ' + timeFormat.format(date);
+      }
+
+      function render(data) {
+        document.title = data.title;
+        $('title').textContent = data.title;
+        $('description').textContent = data.description || '';
+        $('meta').textContent =
+          data.durationMinutes + ' minutes · times shown in ' + timeZone;
+
+        var days = $('days');
+        days.textContent = '';
+        if (data.slots.length === 0) {
+          var empty = document.createElement('p');
+          empty.textContent = 'No times are available right now.';
+          days.appendChild(empty);
+          return;
+        }
+        var grid = null;
+        var lastDay = null;
+        data.slots.forEach(function (iso) {
+          var day = dayFormat.format(new Date(iso));
+          if (day !== lastDay) {
+            var heading = document.createElement('h2');
+            heading.textContent = day;
+            days.appendChild(heading);
+            grid = document.createElement('div');
+            grid.className = 'slots';
+            days.appendChild(grid);
+            lastDay = day;
+          }
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = timeFormat.format(new Date(iso));
+          button.addEventListener('click', function () {
+            choose(iso);
+          });
+          grid.appendChild(button);
+        });
+      }
+
+      function choose(iso) {
+        chosen = iso;
+        showError('');
+        $('chosen').textContent = describe(iso);
+        $('pick').hidden = true;
+        $('form').hidden = false;
+        $('name').focus();
+      }
+
+      function backToSlots() {
+        chosen = null;
+        $('form').hidden = true;
+        $('pick').hidden = false;
+      }
+
+      function load() {
+        google.script.run
+          .withSuccessHandler(render)
+          .withFailureHandler(function () {
+            $('title').textContent = 'Something went wrong';
+            showError('Could not load available times. Please try again later.');
+          })
+          .getPageData();
+      }
+
+      $('back').addEventListener('click', backToSlots);
+
+      $('form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        showError('');
+        $('submit').disabled = true;
+        google.script.run
+          .withSuccessHandler(function (result) {
+            $('submit').disabled = false;
+            if (result.ok) {
+              $('form').hidden = true;
+              $('done').hidden = false;
+              $('doneWhen').textContent = describe(result.start);
+              return;
+            }
+            if (result.reason === 'taken') {
+              backToSlots();
+              showError('That time was just taken. Please pick another.');
+              load();
+              return;
+            }
+            showError('Please check your name and email and try again.');
+          })
+          .withFailureHandler(function () {
+            $('submit').disabled = false;
+            showError('Booking failed. Please try again.');
+          })
+          .book({
+            start: chosen,
+            name: $('name').value,
+            email: $('email').value,
+            notes: $('notes').value,
+            website: $('website').value,
+          });
+      });
+
+      load();
+    </script>
+  </body>
+</html>
